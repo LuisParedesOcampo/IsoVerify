@@ -43,5 +43,5 @@ This software does **not replace clinical judgment**.
 ### 1. Clone the repository
 
 ```bash
-git clone 
+git clone https://github.com/LuisParedesOcampo/IsoVerify
 cd winston-lutz-streamlit
