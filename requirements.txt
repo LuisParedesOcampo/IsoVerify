@@ -1,0 +1,7 @@
+## requirements.txt
+streamlit>=1.30
+pylinac>=3.10
+pydicom>=2.4
+pandas>=2.0
+matplotlib>=3.7
+numpy>=1.24
