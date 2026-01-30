@@ -29,6 +29,7 @@ st.info("Online clinical tool for Winston Lutz calculations based on Pylinac")
 with st.sidebar:
     st.header("Analysis Parameters")
     tolerance = st.number_input("Tolerance (mm)", value=1.0, step=0.1)
+    st.info("Tolerance for SRS treatments is 1mm.")
     bb_size = st.number_input("BB Size (mm)", value=5.0, step=0.1)
     st.info("The PDF report will include details for each analyzed image.")
 
@@ -49,7 +50,7 @@ if uploaded_files:
             metadata_rows.append({
                 "File": uploaded_file.name,
                 "Gantry (°)": getattr(ds, "GantryAngle", 0.0),
-                "Colimador (°)": getattr(ds, "BeamLimitingDeviceAngle", 0.0),
+                "Collimador (°)": getattr(ds, "BeamLimitingDeviceAngle", 0.0),
                 "Couch (°)": getattr(ds, "PatientSupportAngle", 0.0)
             })
 
@@ -71,7 +72,7 @@ if uploaded_files:
             res = wl.results_data()
             st.divider()
 
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3 = st.columns(3) #tres columnas para mostrar los resultados
             # Acceso directo a los atributos que ya verificamos que funcionan
             max_2d = res.max_2d_cax_to_bb_mm
             gantry_3d = res.gantry_3d_iso_diameter_mm
@@ -108,7 +109,7 @@ if uploaded_files:
 
                 wl.publish_pdf(
                     pdf_path,
-                    notes="Winston-Lutz QA generated from Streamlit",
+                    notes="PDF Generated from IsoVery",
                     metadata={
                         "Tolerance": f"{tolerance:.1f} mm"
                     }
@@ -211,7 +212,7 @@ Are you interested in new features or have suggestions for future developments?
 I am open to collaborations and professional opportunities in Medical Physics and Software Development.
 
 - **LinkedIn:** [Luis Fernando Paredes ](https://www.linkedin.com/in/lfparedes1/)
-- **GitHub:** [Project Repository]()
+- **GitHub:** [Project Repository](https://github.com/LuisParedesOcampo/IsoVerify)
 - **Email:** luisfernandoparedes2@gmail.com
 
 *Developed by a Clinical Medical Physicist*
