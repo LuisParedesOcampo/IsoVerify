@@ -6,183 +6,293 @@ import pandas as pd
 import pydicom
 import matplotlib.pyplot as plt
 import warnings
+from datetime import datetime
+import io
 
+# -------------------------------
+# 1. CONFIGURACIÓN INICIAL
+# -------------------------------
 st.set_page_config(
-    page_title="🎯 IsoVerify | Online Winston–Lutz QA Analyzer for SRS/SBRT based on Pylinac",
+    page_title="IsoVerify | Winston–Lutz QA",
     page_icon="🎯",
     layout="wide",
-    menu_items={
-        'About':"🎯 IsoVerify | Online Winston–Lutz QA Analyzer for SRS/SBRT based on Pylinac"
-    }
+    menu_items={'About': "🎯 IsoVerify | Online Winston–Lutz QA Analyzer based on Pylinac"}
 )
-# Bloqueamos avisos internos para que no "ensucien" la interfaz web
+
 warnings.filterwarnings('ignore')
 
 # -------------------------------
-# CONFIGURACIÓN DE PÁGINA
+# 2. GESTIÓN DE ESTADO (MEMORIA)
 # -------------------------------
-st.set_page_config(page_title="Winston-Lutz QA", layout="wide")
+if "analysis_complete" not in st.session_state:
+    st.session_state.analysis_complete = False
+if "wl_metrics" not in st.session_state:
+    st.session_state.wl_metrics = {}
+if "wl_figures" not in st.session_state:
+    st.session_state.wl_figures = {}
+if "pdf_data" not in st.session_state:
+    st.session_state.pdf_data = None
+if "df_trend" not in st.session_state:
+    st.session_state.df_trend = None
+
 st.title("🎯 IsoVerify : Winston-Lutz Analysis")
 st.info("Online clinical tool for Winston Lutz calculations based on Pylinac")
 
-# --- BARRA LATERAL ---
+# -------------------------------
+# 3. BARRA LATERAL (INPUTS)
+# -------------------------------
 with st.sidebar:
     st.header("Analysis Parameters")
     tolerance = st.number_input("Tolerance (mm)", value=1.0, step=0.1)
-    st.info("Tolerance for SRS treatments is 1mm.")
     bb_size = st.number_input("BB Size (mm)", value=5.0, step=0.1)
-    st.info("The PDF report will include details for each analyzed image.")
 
-# --- CARGA DE ARCHIVOS ---
-uploaded_files = st.file_uploader(
-    "Upload DICOM files (.dcm)",
-    accept_multiple_files=True,
-    type=["dcm"]
-)
+    st.divider()
+    st.header("📈 Trend Analysis")
 
-if uploaded_files:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        metadata_rows = []
-        for uploaded_file in uploaded_files:
-            file_data = uploaded_file.read()
-            ds = pydicom.dcmread(pydicom.filebase.DicomBytesIO(file_data))
+    trend_mode = st.radio(
+        "Trend Operation Mode",
+        ["👁️ View existing trend", "🆕 Create new machine trend", "➕ Add result to trend"]
+    )
 
-            metadata_rows.append({
-                "File": uploaded_file.name,
-                "Gantry (°)": getattr(ds, "GantryAngle", 0.0),
-                "Collimador (°)": getattr(ds, "BeamLimitingDeviceAngle", 0.0),
-                "Couch (°)": getattr(ds, "PatientSupportAngle", 0.0)
-            })
+    if trend_mode == "👁️ View existing trend":
+        trend_csv = st.file_uploader("Upload trend CSV", type="csv")
+        if trend_csv:
+            st.session_state.df_trend = pd.read_csv(trend_csv)
 
-            with open(os.path.join(tmpdir, uploaded_file.name), 'wb') as f:
-                f.write(file_data)
+    elif trend_mode == "🆕 Create new machine trend":
+        st.markdown("**New Machine Setup**")
+        machine_id = st.text_input("Machine ID (e.g. Linac1)")
+        operator = st.text_input("Operator Initials")
+        notes = st.text_input("Notes")
 
-        # 🛠️ CORRECCIÓN: Usamos width="stretch" para cumplir con el estándar 2026
-        st.subheader("📋 DICOM Metadata Inspection")
-        st.dataframe(pd.DataFrame(metadata_rows), width="stretch")
+        if st.button("📄 Generate Trend File"):
+            if st.session_state.analysis_complete:
+                res = st.session_state.wl_metrics
+                # USAMOS LA FECHA DEL DICOM, NO LA DE HOY
+                dicom_date = res.get("date", datetime.now().strftime("%Y-%m-%d %H:%M"))
 
-        try:
-            with st.spinner("Performing geometric analysis..."):
-                wl = WinstonLutz(tmpdir)
-                wl.analyze(bb_size_mm=bb_size)
+                new_row = {
+                    "date": dicom_date,
+                    "machine_id": machine_id,
+                    "operator": operator,
+                    "max_2d_mm": round(res["max_2d"], 3),
+                    "gantry_iso_mm": round(res["gantry_3d"], 3),
+                    "tolerance_mm": tolerance,
+                    "pass_fail": "PASS" if res["max_2d"] <= tolerance else "FAIL",
+                    "bb_size_mm": bb_size,
+                    "n_images": res["n_images"],
+                    "notes": notes
+                }
+                df_new = pd.DataFrame([new_row])
+                st.session_state.df_trend = df_new
 
-            # -------------------------------
-            # RESULTADOS Y MÉTRICAS
-            # -------------------------------
-            res = wl.results_data()
-            st.divider()
+                st.success(f"Trend created with date: {dicom_date}")
 
-            c1, c2, c3 = st.columns(3) #tres columnas para mostrar los resultados
-            # Acceso directo a los atributos que ya verificamos que funcionan
-            max_2d = res.max_2d_cax_to_bb_mm
-            gantry_3d = res.gantry_3d_iso_diameter_mm
-
-            c1.metric("Max 2D Distance (CAX → BB)", f"{max_2d:.3f} mm")
-            c2.metric("Gantry Isocenter Diameter (Ø)", f"{gantry_3d:.3f} mm")
-
-            if max_2d <= tolerance:
-                c3.success(f"✅ PASS (Tol: {tolerance} mm)")
-            else:
-                c3.error(f"❌ FAIL (Tol: {tolerance} mm)")
-
-            # Instrucción clínica destacada (Simula el shift del PDF)
-            st.info(f"**🛠 Couch Shift Instruction:** {wl.bb_shift_instructions()}")
-
-            st.warning(
-                "⚠️ Couch shifts are reported in pylinac's internal geometric coordinate system. "
-                "Please verify your machine coordinate convention (IEC 61217, vendor-specific) "
-                "before applying clinical corrections."
-            )
-
-            # -------------------------------
-            # REPORTE PDF
-            # ------------------------------
-            st.divider()
-            st.subheader("📄 PDF Report")
-
-            with st.spinner("Generating PDF report (this may take a few seconds)..."):
-                with tempfile.NamedTemporaryFile(
-                        suffix=".pdf",
-                        delete=False
-                ) as tmp_pdf:
-                    pdf_path = tmp_pdf.name
-
-                wl.publish_pdf(
-                    pdf_path,
-                    notes="PDF Generated from IsoVery",
-                    metadata={
-                        "Tolerance": f"{tolerance:.1f} mm"
-                    }
+                csv = df_new.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="⬇️ Download CSV Now",
+                    data=csv,
+                    file_name=f"WL_Trend_{machine_id}.csv",
+                    mime="text/csv",
+                    key="sidebar_dl_new"
                 )
+            else:
+                st.error("Run analysis first!")
 
-                with open(pdf_path, "rb") as f:
-                    pdf_bytes = f.read()
+    elif trend_mode == "➕ Add result to trend":
+        trend_csv = st.file_uploader("Upload existing CSV", type="csv")
+        operator = st.text_input("Operator")
+        notes = st.text_input("Notes")
 
-            st.success("✅ PDF report generated successfully")
+        if st.button("➕ Append Result"):
+            if st.session_state.analysis_complete and trend_csv:
+                try:
+                    df_existing = pd.read_csv(trend_csv)
+                    res = st.session_state.wl_metrics
+                    # USAMOS LA FECHA DEL DICOM
+                    dicom_date = res.get("date", datetime.now().strftime("%Y-%m-%d %H:%M"))
 
-            st.download_button(
-                label="⬇️ Download Winston-Lutz Report (PDF)",
-                data=pdf_bytes,
-                file_name="Winston_Lutz_QA_Report.pdf",
-                mime="application/pdf"
-            )
+                    current_id = df_existing["machine_id"].iloc[0] if "machine_id" in df_existing.columns else "Unknown"
 
-            # -------------------------------
-            st.divider()
-            # -------------------------------
-            # GRÁFICOS
-            # -------------------------------
-            tab1, tab2 = st.tabs(["Isocenter Summary", "Individual Image Detection"])
+                    new_row = {
+                        "date": dicom_date,
+                        "machine_id": current_id,
+                        "operator": operator,
+                        "max_2d_mm": round(res["max_2d"], 3),
+                        "gantry_iso_mm": round(res["gantry_3d"], 3),
+                        "tolerance_mm": tolerance,
+                        "pass_fail": "PASS" if res["max_2d"] <= tolerance else "FAIL",
+                        "bb_size_mm": bb_size,
+                        "n_images": res["n_images"],
+                        "notes": notes
+                    }
+                    df_updated = pd.concat([df_existing, pd.DataFrame([new_row])], ignore_index=True)
+                    # Ordenar por fecha para que la gráfica tenga sentido cronológico
+                    df_updated['date_dt'] = pd.to_datetime(df_updated['date'])
+                    df_updated = df_updated.sort_values(by='date_dt').drop(columns=['date_dt'])
 
-            with tab1:
-                st.subheader("📊 Isocenter Summary")
+                    st.session_state.df_trend = df_updated
 
-                # Limpia cualquier figura previa
-                plt.close("all")
+                    st.success(f"Result added for date: {dicom_date}")
 
-                # Pylinac dibuja sobre pyplot
-                wl.plot_summary()
-
-                # Captura la figura ACTUAL creada por pylinac
-                fig = plt.gcf()
-
-                # Pásala explícitamente a Streamlit
-                st.pyplot(fig)
-
-                # Cierra para evitar fugas de estado
-                plt.close(fig)
-
-            from matplotlib.figure import Figure
-
-            with tab2:
-                st.subheader("📸 Individual Image Detection")
-
-                for i, img in enumerate(wl.images, start=1):
-                    st.markdown(
-                        f"**Image {i}**  "
-                        f"(G={img.gantry_angle:.0f}°, "
-                        f"C={img.collimator_angle:.0f}°, "
-                        f"T={img.couch_angle:.0f}°)"
+                    csv = df_updated.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="⬇️ Download Updated CSV",
+                        data=csv,
+                        file_name=f"WL_Trend_{current_id}.csv",
+                        mime="text/csv",
+                        key="sidebar_dl_append"
                     )
 
-                    plt.close("all")
+                except Exception as e:
+                    st.error(f"Error: {e}")
+            else:
+                st.error("Run analysis and upload CSV first!")
 
-                    fig = plt.figure(figsize=(1, 1), dpi=100)
-                    img.plot()
+# -------------------------------
+# 4. LÓGICA DE ANÁLISIS (PROTEGIDA)
+# -------------------------------
+uploaded_files = st.file_uploader("Upload DICOM files", accept_multiple_files=True, type=["dcm"])
 
-                    fig = plt.gcf()
+if st.button("▶️ Run Winston–Lutz Analysis"):
+    if uploaded_files:
+        with st.spinner("Analyzing geometry..."):
+            try:
+                # 1. Extraer fecha del PRIMER archivo antes de procesar todo
+                # Asumimos que todos los archivos son de la misma sesión
+                first_file = uploaded_files[0]
+                first_file.seek(0)
+                ds_head = pydicom.dcmread(first_file, stop_before_pixels=True)
 
-                    st.pyplot(fig,use_container_width=False)  # 🔴 ESTA LÍNEA ES LA CLAVE
+                # Intentamos buscar ContentDate (EPID) o AcquisitionDate
+                date_tag = ds_head.get("ContentDate") or ds_head.get("AcquisitionDate") or ds_head.get(
+                    "InstanceCreationDate")
+                time_tag = ds_head.get("ContentTime") or ds_head.get("AcquisitionTime") or "120000"
 
-                    plt.close(fig)
+                # Formatear fecha DICOM (YYYYMMDD) a legible (YYYY-MM-DD HH:MM)
+                if date_tag:
+                    try:
+                        full_dt = datetime.strptime(f"{date_tag}{time_tag[:4]}", "%Y%m%d%H%M")
+                        formatted_date = full_dt.strftime("%Y-%m-%d %H:%M")
+                    except:
+                        formatted_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                else:
+                    formatted_date = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+                # Resetear puntero del archivo para que Pylinac lo lea bien
+                first_file.seek(0)
 
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    for uploaded_file in uploaded_files:
+                        uploaded_file.seek(0)
+                        with open(os.path.join(tmpdir, uploaded_file.name), 'wb') as f:
+                            f.write(uploaded_file.read())
 
-        except Exception as e:
-            st.error("Error in Winston-Lutz analysis.")
-            st.exception(e)
-else:
-    st.info("Waiting for DICOM files...")
+                    wl = WinstonLutz(tmpdir)
+                    wl.analyze(bb_size_mm=bb_size)
+
+                    res = wl.results_data()
+
+                    st.session_state.wl_metrics = {
+                        "date": formatted_date,  # <--- AQUÍ GUARDAMOS LA FECHA REAL
+                        "max_2d": res.max_2d_cax_to_bb_mm,
+                        "gantry_3d": res.gantry_3d_iso_diameter_mm,
+                        "n_images": len(wl.images),
+                        "shift_instructions": wl.bb_shift_instructions()
+                    }
+
+                    plt.close('all')
+                    wl.plot_summary()
+                    fig_summary = plt.gcf()
+                    st.session_state.wl_figures["summary"] = fig_summary
+
+                    individual_figs = []
+                    for img in wl.images:
+                        fig, ax = plt.subplots()
+                        img.plot(ax=ax)
+                        ax.axis('off')
+                        label = f"G={img.gantry_angle:.0f}° C={img.collimator_angle:.0f}° T={img.couch_angle:.0f}°"
+                        individual_figs.append((label, fig))
+                    st.session_state.wl_figures["individual"] = individual_figs
+
+                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
+                        wl.publish_pdf(tmp_pdf.name, metadata={"Tolerance": f"{tolerance} mm"})
+                        with open(tmp_pdf.name, "rb") as f:
+                            st.session_state.pdf_data = f.read()
+
+                    st.session_state.analysis_complete = True
+
+            except Exception as e:
+                st.error(f"Analysis Error: {e}")
+                st.session_state.analysis_complete = False
+
+# -------------------------------
+# 5. VISUALIZACIÓN
+# -------------------------------
+if st.session_state.analysis_complete:
+    metrics = st.session_state.wl_metrics
+
+    st.divider()
+    # Mostramos la fecha detectada para confirmación visual
+    st.caption(f"📅 Image Acquisition Date: **{metrics.get('date', 'Unknown')}**")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Max 2D Distance", f"{metrics['max_2d']:.3f} mm")
+    c2.metric("Gantry Iso (Ø)", f"{metrics['gantry_3d']:.3f} mm")
+
+    if metrics['max_2d'] <= tolerance:
+        c3.success(f"✅ PASS (Tol: {tolerance}mm)")
+    else:
+        c3.error(f"❌ FAIL (Tol: {tolerance}mm)")
+
+    st.info(f"**🛠 Couch Shift:** {metrics['shift_instructions']}")
+
+    if st.session_state.pdf_data:
+        st.download_button("⬇️ Download Report (PDF)", st.session_state.pdf_data, "WL_Report.pdf", "application/pdf")
+
+    t1, t2 = st.tabs(["Isocenter Summary", "Individual Images"])
+
+    with t1:
+        if "summary" in st.session_state.wl_figures:
+            st.pyplot(st.session_state.wl_figures["summary"])
+
+    with t2:
+        if "individual" in st.session_state.wl_figures:
+            cols = st.columns(3)
+            for i, (title, fig) in enumerate(st.session_state.wl_figures["individual"]):
+                with cols[i % 3]:
+                    st.caption(title)
+                    st.pyplot(fig)
+
+# -------------------------------
+# 6. GRÁFICA DE TENDENCIAS
+# -------------------------------
+if st.session_state.df_trend is not None and not st.session_state.df_trend.empty:
+    st.divider()
+    st.subheader("📊 Historical Trend")
+
+    df_chart = st.session_state.df_trend.copy()
+
+    try:
+        df_chart['date'] = pd.to_datetime(df_chart['date'])
+        # Ordenamos por fecha para que la línea no haga zig-zag si subes datos antiguos
+        df_chart = df_chart.sort_values(by='date')
+
+        machine_label = df_chart['machine_id'].iloc[0] if 'machine_id' in df_chart.columns else "Unknown"
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(df_chart['date'], df_chart['max_2d_mm'], marker='o', linestyle='-')
+        ax.axhline(y=tolerance, color='r', linestyle='--')
+        ax.set_title(f"Stability: {machine_label}")
+        ax.grid(True, alpha=0.3)
+        st.pyplot(fig)
+
+    except Exception as e:
+        st.error(f"Error plotting trend: {e}")
+
+# -------------------------------
+# FOOTER / LEGAL
+# -------------------------------
 # Legal Disclaimer Section
 
 st.divider()
